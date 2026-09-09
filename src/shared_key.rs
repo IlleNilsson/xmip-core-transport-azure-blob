@@ -24,7 +24,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use transport::error::{Result, protocol_error};
 
-use crate::wire::Request;
+use http::message::Request;
 
 /// The service version every request names.
 pub const VERSION: &str = "2021-08-06";

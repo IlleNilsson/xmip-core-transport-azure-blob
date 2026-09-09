@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use transport::error::{Result, TransportError};
 
-use crate::endpoint;
-use crate::percent::encode;
 use crate::shared_key::{self, Signer};
-use crate::wire::{self, Request, Response};
 use crate::xml;
+use http::endpoint;
+use http::message::{self, Request, Response};
+use http::percent::encode;
 
 pub struct Client {
     endpoint: String,
@@ -95,7 +95,7 @@ impl Client {
             .signer
             .sign(request.header("Host", &self.host), &shared_key::now());
         let stream = endpoint::connect(&self.endpoint, self.timeout)?;
-        judge(wire::exchange(stream, &signed)?)
+        judge(message::exchange(stream, &signed)?)
     }
 }
 
