@@ -13,13 +13,13 @@
 //!
 //! ```text
 //! shared_key.rs  signing a request, and verifying one
-//! endpoint.rs    the endpoint, and a connection to it, TLS or plain
-//! percent.rs     percent-encoding a blob name or a prefix
-//! wire.rs        HTTP/1.1 on a socket, both sides
 //! xml.rs         the enumeration and the error, picked by hand
 //! client.rs      Xmip's side: list, get, put, delete
 //! session.rs     the far end a test or the playground runs on loopback
 //! ```
+//!
+//! The endpoint, the percent-encoding and HTTP itself come from the http
+//! technology, the flat XML scan from the capability (ADR-0044).
 //!
 //! Blob Storage has blobs and a lease this transport does not yet take, so
 //! [`Transport::claims`] answers [`NoNativeClaim`], ADR-0024 clause 5. The
@@ -30,11 +30,8 @@
 //! or a name alone in this transport's container.
 
 pub mod client;
-pub mod endpoint;
-pub mod percent;
 pub mod session;
 pub mod shared_key;
-pub mod wire;
 pub mod xml;
 
 use std::time::Duration;
