@@ -34,14 +34,25 @@ pub mod session;
 pub mod shared_key;
 pub mod xml;
 
+use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::Client;
+use http::endpoint;
 pub use session::{Event, Session};
-use transport::error::Result;
+use transport::error::{Result, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, NoNativeClaim, ResourceClaim, Transport};
 
+/// What the loopback pair agrees on: one account with its key in base64
+/// as the portal shows it, one container, one blob put there.
+const LOOPBACK_ACCOUNT: &str = "probe";
+const LOOPBACK_CONTAINER: &str = "probe";
+const LOOPBACK_BLOB: &str = "probe.bin";
+const LOOPBACK_KEY: &str = "cHJvYmU=";
+
+#[derive(Clone)]
 pub struct AzureBlobTransport {
     endpoint: String,
     account: String,
@@ -154,10 +165,74 @@ impl Transport for AzureBlobTransport {
     }
 }
 
+impl AzureBlobTransport {
+    /// Both ends on this machine: an ephemeral local port, one account key
+    /// the far end expects and the near end signs with, the loopback
+    /// timeout.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("http://127.0.0.1:0", LOOPBACK_ACCOUNT, LOOPBACK_CONTAINER)
+            .with_key(LOOPBACK_KEY)
+            .timing_out_after(LOOPBACK_TIMEOUT)
+    }
+}
+
+/// A bound session waiting for its one store. The Blob service opens a
+/// connection per call, so the session serves one request at a time until
+/// one stored.
+struct Serving {
+    session: Session,
+    listener: TcpListener,
+    address: String,
+}
+
+impl FarEnd for Serving {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        let Self {
+            mut session,
+            listener,
+            ..
+        } = *self;
+        loop {
+            match session.serve_one(&listener)? {
+                Event::Stored(arrived) => return Ok(arrived),
+                Event::Refused(code) => {
+                    return Err(protocol_error(format!("the session refused: {code}")));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Loopback for AzureBlobTransport {
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?;
+        Ok(Box::new(Serving {
+            session: self.session()?,
+            listener,
+            address,
+        }))
+    }
+
+    /// Put the payload as one block blob, from a fresh near end signing as
+    /// this transport does, at the endpoint on `address`.
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        let near = Self {
+            endpoint: format!("http://{address}"),
+            ..self.clone()
+        };
+        near.send(LOOPBACK_BLOB, payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
     use std::thread::JoinHandle;
 
     const KEY: &str = "c2VjcmV0";
@@ -251,5 +326,38 @@ mod tests {
                 .expect_err("key")
                 .retryable
         );
+    }
+
+    #[test]
+    fn the_loopback_stores_one_blob_through_its_own_session() {
+        let pair = AzureBlobTransport::loopback();
+        let arrived = pair.round(b"a blob").expect("round");
+        assert_eq!(arrived.bytes, b"a blob");
+        assert_eq!(arrived.origin_uri, "azure-blob://probe/probe.bin");
+        assert_eq!(pair.name(), "azure-blob");
+        assert_eq!(pair.ceiling(), None);
+    }
+
+    /// The Playground's edge payloads, written here so the crate does not
+    /// depend on it.
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole() {
+        let pair = AzureBlobTransport::loopback();
+        for (name, payload) in edge_payloads() {
+            assert!(pair.refuses(&payload).is_none(), "{name}");
+            let arrived = pair.round(&payload).expect(name);
+            assert_eq!(arrived.bytes, payload, "{name}");
+        }
     }
 }
