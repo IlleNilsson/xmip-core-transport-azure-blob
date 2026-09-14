@@ -16,7 +16,7 @@
 //! The `tls` feature is the answer to that, not a stronger signature.
 
 use std::fmt::Write as _;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -24,7 +24,9 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use transport::error::{Result, protocol_error};
 
+use http::date::rfc1123;
 use http::message::Request;
+use http::signature::same;
 
 /// The service version every request names.
 pub const VERSION: &str = "2021-08-06";
@@ -151,66 +153,16 @@ pub fn string_to_sign(account: &str, request: &Request) -> String {
     lines.join("\n")
 }
 
-/// The moment now, as `x-ms-date` writes it: `Tue, 08 Sep 2026 12:00:00 GMT`.
+/// The moment now, as `x-ms-date` writes it: `Tue, 08 Sep 2026 12:00:00 GMT`
+/// — RFC 1123, which is the http technology's to write (ADR-0044).
 #[must_use]
 pub fn now() -> String {
     rfc1123(SystemTime::now())
 }
 
-/// `at` as RFC 1123 writes it, which is how `x-ms-date` writes it.
-#[must_use]
-pub fn rfc1123(at: SystemTime) -> String {
-    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let secs = at
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|since| i64::try_from(since.as_secs()).ok())
-        .unwrap_or(0);
-    let days = secs.div_euclid(86_400);
-    let (year, month, day) = civil(days);
-    let rest = secs.rem_euclid(86_400);
-    let weekday = usize::try_from((days + 4).rem_euclid(7)).unwrap_or(0);
-    let month_name = usize::try_from(month - 1).map_or("Jan", |m| MONTHS[m % 12]);
-    format!(
-        "{}, {day:02} {month_name} {year:04} {:02}:{:02}:{:02} GMT",
-        DAYS[weekday],
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
-}
-
-/// Year, month and day of a day count since 1970-01-01 — Howard Hinnant's
-/// civil-from-days.
-fn civil(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    (yoe + era * 400 + i64::from(month <= 2), month, day)
-}
-
-/// Equal, without the comparison's timing saying how far the two agreed.
-fn same(expected: &str, given: &str) -> bool {
-    expected.len() == given.len()
-        && expected
-            .bytes()
-            .zip(given.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     const KEY: &str = "c2VjcmV0";
     const AT: &str = "Tue, 08 Sep 2026 12:00:00 GMT";
@@ -275,14 +227,6 @@ mod tests {
         assert!(other.verify(&sent).is_err());
         assert!(signer.verify(&Request::new("GET", "/")).is_err());
         assert!(Signer::new("acct", "not base64!").is_err());
-    }
-
-    #[test]
-    fn the_date_is_written_as_rfc_1123_writes_it() {
-        assert_eq!(rfc1123(UNIX_EPOCH), "Thu, 01 Jan 1970 00:00:00 GMT");
-        let at = UNIX_EPOCH + Duration::from_secs(784_111_777);
-        assert_eq!(at, UNIX_EPOCH + Duration::from_secs(784_111_777));
-        assert_eq!(rfc1123(at), "Sun, 06 Nov 1994 08:49:37 GMT");
         assert!(now().ends_with(" GMT"));
     }
 }
