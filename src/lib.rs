@@ -18,8 +18,10 @@
 //! session.rs     the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, the percent-encoding and HTTP itself come from the http
-//! technology, the flat XML scan from the capability (ADR-0044).
+//! The endpoint, the percent-encoding, HTTP itself, the RFC 1123 date and
+//! the judgement of an answer come from the http technology, the flat XML
+//! scan from the capability (ADR-0044); the Shared Key string to sign is
+//! Azure's and stays here.
 //!
 //! Blob Storage has blobs and a lease this transport does not yet take, so
 //! [`Transport::claims`] answers [`NoNativeClaim`], ADR-0024 clause 5. The

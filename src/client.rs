@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use transport::error::{Result, TransportError};
+use transport::error::Result;
 
 use crate::shared_key::{self, Signer};
 use crate::xml;
@@ -104,20 +104,15 @@ fn path(container: &str, blob: &str) -> String {
 }
 
 /// A 2xx answer as it is; anything else as a failure naming the status and
-/// the code the service put in the body, retryable where it says come back.
+/// the code the service put in the body, retryable where HTTP or the
+/// service says come back.
 fn judge(response: Response) -> Result<Response> {
-    if (200..300).contains(&response.status) {
-        return Ok(response);
-    }
-    let code = xml::first(&response.text(), "Code").unwrap_or_default();
-    let retryable = response.status >= 500
-        || response.status == 408
-        || response.status == 429
-        || code == "ServerBusy";
-    Err(TransportError {
-        message: format!("the Blob service answered {} {code}", response.status),
-        retryable,
-    })
+    message::judge(
+        "the Blob service",
+        response,
+        |answer| xml::first(&answer.text(), "Code").unwrap_or_default(),
+        |code| code == "ServerBusy",
+    )
 }
 
 #[cfg(test)]

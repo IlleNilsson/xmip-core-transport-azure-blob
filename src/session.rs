@@ -13,13 +13,13 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use transport::Arrived;
-use transport::error::{Result, protocol_error};
-use transport::socket;
+use transport::error::Result;
 
 use crate::shared_key::Signer;
 use crate::xml;
-use http::message::{self, Request, Response};
+use http::message::{Request, Response};
 use http::percent::decode;
+use http::server;
 
 /// What the client did, as [`Session::serve_one`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,13 +82,7 @@ impl Session {
     /// # Errors
     /// Where the connection could not be accepted, broke, or sent nothing.
     pub fn serve_one(&mut self, listener: &TcpListener) -> Result<Event> {
-        let (stream, _) = socket::accept_tcp(listener, self.timeout)?;
-        let (mut reader, mut writer) = socket::split(stream)?;
-        let request = message::read_request(&mut reader)?
-            .ok_or_else(|| protocol_error("a connection that sent no request"))?;
-        let (event, response) = self.answer(&request);
-        message::write_response(&mut writer, &response)?;
-        Ok(event)
+        server::serve_one(listener, self.timeout, |request| self.answer(request))
     }
 
     fn answer(&mut self, request: &Request) -> (Event, Response) {
