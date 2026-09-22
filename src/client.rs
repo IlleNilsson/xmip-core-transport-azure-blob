@@ -10,7 +10,6 @@ use std::time::Duration;
 use transport::error::Result;
 
 use crate::shared_key::{self, Signer};
-use crate::xml;
 use http::endpoint;
 use http::message::{self, Request, Response};
 use http::percent::encode;
@@ -56,7 +55,7 @@ impl Client {
             .query("restype", "container")
             .query("comp", "list")
             .query("prefix", prefix);
-        Ok(xml::texts(&self.call(request)?.text(), "Name"))
+        transport::xml::texts(&self.call(request)?.text(), "Name")
     }
 
     /// The blob at `blob` in `container`.
@@ -110,7 +109,12 @@ fn judge(response: Response) -> Result<Response> {
     message::judge(
         "the Blob service",
         response,
-        |answer| xml::first(&answer.text(), "Code").unwrap_or_default(),
+        |answer| {
+            transport::xml::first(&answer.text(), "Code")
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        },
         |code| code == "ServerBusy",
     )
 }
@@ -162,7 +166,7 @@ mod tests {
     fn a_server_failure_is_worth_repeating_and_a_client_one_is_not() {
         assert!(judge(Response::new(503)).expect_err("server").retryable);
         assert!(judge(Response::new(429)).expect_err("throttled").retryable);
-        let busy = Response::new(400).body(xml::error("ServerBusy", "").as_bytes());
+        let busy = Response::new(400).body(crate::xml::error("ServerBusy", "").as_bytes());
         assert!(judge(busy).expect_err("busy").retryable);
         assert!(!judge(Response::new(403)).expect_err("forbidden").retryable);
         assert!(Client::new("orders.local", "acct", KEY).is_err());
