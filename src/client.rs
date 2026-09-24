@@ -12,7 +12,7 @@ use transport::error::Result;
 use azure::shared_key::{self, Signer};
 use http::endpoint;
 use http::message::{self, Request, Response};
-use http::percent::encode;
+use net::percent::encode;
 
 pub struct Client {
     endpoint: String,
