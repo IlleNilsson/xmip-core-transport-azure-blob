@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use transport::error::Result;
 
-use crate::shared_key::{self, Signer};
+use azure::shared_key::{self, Signer};
 use http::endpoint;
 use http::message::{self, Request, Response};
 use http::percent::encode;
