@@ -12,16 +12,16 @@
 //! (ADR-0033).
 //!
 //! ```text
-//! shared_key.rs  signing a request, and verifying one
 //! xml.rs         the enumeration and the error, picked by hand
 //! client.rs      Xmip's side: list, get, put, delete
 //! session.rs     the far end a test or the playground runs on loopback
 //! ```
 //!
 //! The endpoint, the percent-encoding, HTTP itself, the RFC 1123 date and
-//! the judgement of an answer come from the http technology, the flat XML
-//! scan from the capability (ADR-0044); the Shared Key string to sign is
-//! Azure's and stays here.
+//! the judgement of an answer come from the http technology, Shared Key
+//! from the Azure crate, the flat XML scan from the capability (ADR-0044).
+//! Shared Key lived here until the owner's ruling of 2026-09-22 put what
+//! Azure speaks in the Azure crate.
 //!
 //! Blob Storage has blobs and a lease this transport does not yet take, so
 //! [`Transport::claims`] answers [`NoNativeClaim`], ADR-0024 clause 5. The
@@ -33,7 +33,6 @@
 
 pub mod client;
 pub mod session;
-pub mod shared_key;
 pub mod xml;
 
 use std::net::TcpListener;

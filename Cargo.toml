@@ -19,13 +19,14 @@ path = "src/lib.rs"
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # XML character data, escaped as every reader in the estate unescapes it.
 codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
-# The endpoint parser, and TLS behind the `tls` feature — one TLS stack in
-# the estate, the http technology's (ADR-0033).
+# The endpoint parser, the request and its answer, and TLS behind the
+# `tls` feature — one TLS stack in the estate, the http technology's
+# (ADR-0033).
 http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
-# Shared Key is HMAC-SHA256 under a base64 account key, base64 both ways.
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
+# Shared Key, which this crate carried with its HMAC-SHA256 and base64
+# until the owner's ruling of 2026-09-22 put what Azure speaks in the
+# Azure crate (ADR-0044).
+azure = { package = "xmip-core-transport-azure", git = "https://github.com/IlleNilsson/xmip-core-transport-azure", branch = "main" }
 
 [features]
 default = []

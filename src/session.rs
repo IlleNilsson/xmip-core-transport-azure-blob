@@ -15,8 +15,8 @@ use std::time::Duration;
 use transport::Arrived;
 use transport::error::Result;
 
-use crate::shared_key::Signer;
 use crate::xml;
+use azure::shared_key::Signer;
 use http::message::{Request, Response};
 use http::percent::decode;
 use http::server;
