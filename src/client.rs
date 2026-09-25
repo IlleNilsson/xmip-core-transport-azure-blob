@@ -11,12 +11,13 @@ use transport::error::Result;
 
 use azure::shared_key::{self, Signer};
 use http::endpoint;
-use http::message::{self, Request, Response};
+use http::status;
+use net::Endpoint;
+use net::http::{Request, Response};
 use net::percent::encode;
 
 pub struct Client {
-    endpoint: String,
-    host: String,
+    endpoint: Endpoint,
     signer: Signer,
     timeout: Option<Duration>,
 }
@@ -29,8 +30,7 @@ impl Client {
     /// Where `endpoint` is not an HTTP URL, or the key is not base64.
     pub fn new(endpoint: &str, account: &str, key_base64: &str) -> Result<Self> {
         Ok(Self {
-            endpoint: endpoint.to_string(),
-            host: endpoint::authority(endpoint)?,
+            endpoint: Endpoint::parse(endpoint)?,
             signer: Signer::new(account, key_base64)?,
             timeout: None,
         })
@@ -90,11 +90,12 @@ impl Client {
     }
 
     fn call(&self, request: Request) -> Result<Response> {
-        let signed = self
-            .signer
-            .sign(request.header("Host", &self.host), &shared_key::now());
+        let signed = self.signer.sign(
+            request.header("Host", &self.endpoint.authority()),
+            &shared_key::now(),
+        );
         let stream = endpoint::connect(&self.endpoint, self.timeout)?;
-        judge(message::exchange(stream, &signed)?)
+        judge(net::http::exchange(stream, &signed)?)
     }
 }
 
@@ -106,7 +107,7 @@ fn path(container: &str, blob: &str) -> String {
 /// the code the service put in the body, retryable where HTTP or the
 /// service says come back.
 fn judge(response: Response) -> Result<Response> {
-    message::judge(
+    status::judge(
         "the Blob service",
         response,
         |answer| {

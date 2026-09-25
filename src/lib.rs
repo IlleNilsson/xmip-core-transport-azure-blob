@@ -39,7 +39,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::Client;
-use http::endpoint;
+use net::Endpoint;
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
@@ -195,7 +195,7 @@ impl Loopback for AzureBlobTransport {
                     _ => {}
                 }
             },
-            socket::bind_tcp(&endpoint::authority(&self.endpoint)?)?,
+            socket::bind_tcp(&Endpoint::parse(&self.endpoint)?.address())?,
         )))
     }
 
