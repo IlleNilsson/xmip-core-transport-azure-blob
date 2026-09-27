@@ -204,9 +204,9 @@ mod tests {
             Event::Stored(Arrived::new("azure-blob://c/b", b"x".to_vec()))
         );
         let (_, response) = session.answer(&signed(listing("b")));
-        assert!(response.text().contains("<Name>b</Name>"));
+        assert!(response.text().expect("text").contains("<Name>b</Name>"));
         let (_, response) = session.answer(&signed(listing("z")));
-        assert!(!response.text().contains("<Name>"));
+        assert!(!response.text().expect("text").contains("<Name>"));
         let (event, response) = session.answer(&signed(Request::new("DELETE", "/c/b")));
         assert_eq!(
             (event, response.status),
