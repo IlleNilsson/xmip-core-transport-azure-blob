@@ -39,6 +39,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use client::Client;
+use http::endpoint::Connections;
 use net::Endpoint;
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
@@ -63,6 +64,9 @@ pub struct AzureBlobTransport {
     key: String,
     prefix: String,
     timeout: Option<Duration>,
+    /// The connections kept to the service, shared by every client this
+    /// makes.
+    connections: Connections,
 }
 
 impl AzureBlobTransport {
@@ -77,6 +81,7 @@ impl AzureBlobTransport {
             key: String::new(),
             prefix: String::new(),
             timeout: None,
+            connections: Connections::new(),
         }
     }
 
@@ -107,6 +112,7 @@ impl AzureBlobTransport {
     /// Where the endpoint is not an HTTP URL, or the key is not base64.
     pub fn client(&self) -> Result<Client> {
         let client = Client::new(&self.endpoint, &self.account, &self.key)?;
+        let client = client.sharing(self.connections.clone());
         Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
             None => client,
