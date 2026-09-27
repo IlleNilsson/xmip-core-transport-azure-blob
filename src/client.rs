@@ -55,7 +55,7 @@ impl Client {
             .query("restype", "container")
             .query("comp", "list")
             .query("prefix", prefix);
-        transport::xml::texts(&self.call(request)?.text(), "Name")
+        transport::xml::texts(self.call(request)?.text()?, "Name")
     }
 
     /// The blob at `blob` in `container`.
@@ -111,9 +111,10 @@ fn judge(response: Response) -> Result<Response> {
         "the Blob service",
         response,
         |answer| {
-            transport::xml::first(&answer.text(), "Code")
+            answer
+                .text()
                 .ok()
-                .flatten()
+                .and_then(|xml| transport::xml::first(xml, "Code").ok().flatten())
                 .unwrap_or_default()
         },
         |code| code == "ServerBusy",

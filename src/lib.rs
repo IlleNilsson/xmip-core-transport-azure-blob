@@ -45,7 +45,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, NoNativeClaim, ResourceClaim, Transport};
+use transport::{Arrived, Configured, Directions, NoNativeClaim, ResourceClaim, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// What the loopback pair agrees on: one account with its key in base64
 /// as the portal shows it, one container, one blob put there.
@@ -167,6 +168,64 @@ impl Transport for AzureBlobTransport {
     }
 }
 
+impl Configured for AzureBlobTransport {
+    /// The address is the Blob service endpoint,
+    /// `https://<account>.blob.core.windows.net`. The account key is the
+    /// Location's credentials, not a setting: a secret never is.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "account",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The storage account requests are signed as.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "container",
+                kind: Kind::Text,
+                presence: Presence::Required,
+                meaning: "The container blobs are taken from, and put in when a send target \
+                          names none.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "prefix",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The name prefix a Receive Location takes blobs under, in/; the \
+                          whole container when left out.",
+                applies: Applies::Receive,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long an endpoint that stops answering is waited on; unbounded \
+                          when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        // The account key comes through the Location's credentials.
+        let mut transport = Self::new(
+            address,
+            settings.text("account"),
+            settings.text("container"),
+        );
+        if let Some(prefix) = settings.optional_text("prefix") {
+            transport = transport.with_prefix(prefix);
+        }
+        Ok(match settings.optional_duration("timeout") {
+            Some(timeout) => transport.timing_out_after(timeout),
+            None => transport,
+        })
+    }
+}
+
 impl AzureBlobTransport {
     /// Both ends on this machine: an ephemeral local port, one account key
     /// the far end expects and the near end signs with, the loopback
@@ -222,6 +281,36 @@ mod tests {
             .with_key(key)
             .with_prefix("in/")
             .timing_out_after(Duration::from_secs(2))
+    }
+
+    #[test]
+    fn azure_blob_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(
+            AzureBlobTransport::SETTINGS.problems(),
+            Vec::<String>::new()
+        );
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let endpoint = "https://acct.blob.core.windows.net";
+        let given = [
+            text("account", "acct"),
+            text("container", "orders"),
+            text("prefix", "in/"),
+            text("timeout", "5s"),
+        ];
+        let received = AzureBlobTransport::open(endpoint, Applies::Receive, &given).expect("built");
+        assert_eq!(received.endpoint, endpoint);
+        assert_eq!(
+            (received.account.as_str(), received.container.as_str()),
+            ("acct", "orders")
+        );
+        assert_eq!(received.prefix, "in/");
+        assert_eq!(received.timeout, Some(Duration::from_secs(5)));
+        assert!(received.key.is_empty(), "the key is the credentials'");
+        let Err(refused) = AzureBlobTransport::open(endpoint, Applies::Send, &given[..1]) else {
+            panic!("the container is required");
+        };
+        assert!(refused.message.contains("\"container\""), "{refused}");
     }
 
     fn serve(
