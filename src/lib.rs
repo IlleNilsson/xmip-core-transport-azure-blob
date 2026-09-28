@@ -40,7 +40,7 @@ use std::time::Duration;
 
 pub use client::Client;
 use http::endpoint::Connections;
-use net::Endpoint;
+use net::{Endpoint, Target};
 pub use session::{Event, Session};
 use transport::error::{Result, protocol_error};
 use transport::listening::Listening;
@@ -136,7 +136,9 @@ impl AzureBlobTransport {
     /// `azure-blob://container/blob` — or is a name alone in this
     /// transport's container.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        socket::target("azure-blob", target).unwrap_or((&self.container, target))
+        Target::under(&["azure-blob"], target).map_or((&self.container, target), |named| {
+            (named.authority(), named.path())
+        })
     }
 }
 

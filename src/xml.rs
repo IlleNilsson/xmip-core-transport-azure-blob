@@ -1,8 +1,8 @@
 //! The little XML the Blob service speaks: a listing naming blobs, an error
 //! naming a code.
 //!
-//! Written by hand, both documents flat; read back by the capability's
-//! flat scan (ADR-0044), which is a scan, not a tree, because the one
+//! Written by hand, both documents flat; read back by the
+//! estate's flat scan (`codec::xml`), which is a scan, not a tree, because the one
 //! question either side asks is the text of every element by one name.
 
 use codec::xml::escape;
@@ -38,7 +38,7 @@ pub fn error(code: &str, message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use transport::xml::{first, texts};
+    use codec::xml::{text, texts};
 
     #[test]
     fn a_listing_names_its_blobs_back_with_entities_intact() {
@@ -46,7 +46,7 @@ mod tests {
         let xml = listing("orders", "in/", &blobs);
         assert!(xml.contains("<Name>in/a&amp;b.edi</Name>"));
         assert_eq!(texts(&xml, "Name").expect("read"), blobs);
-        assert_eq!(first(&xml, "Prefix").expect("read").as_deref(), Some("in/"));
+        assert_eq!(text(&xml, "Prefix").expect("read").as_deref(), Some("in/"));
         assert!(texts(&xml, "Absent").expect("read").is_empty());
         assert!(texts("<Name>unclosed", "Name").expect("read").is_empty());
     }
@@ -55,9 +55,9 @@ mod tests {
     fn an_error_names_its_code() {
         let xml = error("AuthenticationFailed", "Server failed to authenticate");
         assert_eq!(
-            first(&xml, "Code").expect("read").as_deref(),
+            text(&xml, "Code").expect("read").as_deref(),
             Some("AuthenticationFailed")
         );
-        assert_eq!(first(&xml, "Absent").expect("read"), None);
+        assert_eq!(text(&xml, "Absent").expect("read"), None);
     }
 }

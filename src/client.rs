@@ -67,7 +67,7 @@ impl Client {
             .query("restype", "container")
             .query("comp", "list")
             .query("prefix", prefix);
-        transport::xml::texts(self.call(request)?.text()?, "Name")
+        Ok(codec::xml::texts(self.call(request)?.text()?, "Name")?)
     }
 
     /// The blob at `blob` in `container`.
@@ -128,7 +128,7 @@ fn judge(response: Response) -> Result<Response> {
             answer
                 .text()
                 .ok()
-                .and_then(|xml| transport::xml::first(xml, "Code").ok().flatten())
+                .and_then(|xml| codec::xml::text(xml, "Code").ok().flatten())
                 .unwrap_or_default()
         },
         |code| code == "ServerBusy",

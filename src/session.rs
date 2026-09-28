@@ -62,13 +62,6 @@ impl Session {
         self
     }
 
-    /// Hold these blobs, keyed `container/blob`.
-    #[must_use]
-    pub fn with_blobs(mut self, blobs: BTreeMap<String, Vec<u8>>) -> Self {
-        self.blobs = blobs;
-        self
-    }
-
     /// What is held now, keyed `container/blob`, stores and deletes
     /// included.
     #[must_use]
