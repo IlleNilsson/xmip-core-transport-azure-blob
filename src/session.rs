@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::net::TcpListener;
 use std::time::Duration;
 
-use transport::Arrived;
+use transport::Taken;
 use transport::error::Result;
 
 use crate::xml;
@@ -29,7 +29,7 @@ pub enum Event {
     /// The client fetched this blob.
     Retrieved(String),
     /// The client stored a blob; here is the Stream.
-    Stored(Arrived),
+    Stored(Taken),
     /// The client deleted this blob.
     Deleted(String),
     /// The client was answered with this error code.
@@ -139,7 +139,7 @@ impl Session {
         self.blobs
             .insert(format!("{container}/{blob}"), bytes.to_vec());
         (
-            Event::Stored(Arrived::new(origin(container, blob), bytes)),
+            Event::Stored(Taken::new(origin(container, blob), bytes)),
             Response::new(201).header("ETag", "\"xmip\""),
         )
     }
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(response.status, 201);
         assert_eq!(
             event,
-            Event::Stored(Arrived::new("azure-blob://c/b", b"x".to_vec()))
+            Event::Stored(Taken::new("azure-blob://c/b", b"x".to_vec()))
         );
         let (_, response) = session.answer(&signed(listing("b")));
         assert!(response.text().expect("text").contains("<Name>b</Name>"));
