@@ -39,6 +39,10 @@ pub enum Event {
 pub struct Session {
     signer: Signer,
     blobs: BTreeMap<String, Vec<u8>>,
+    /// Each blob's `Etag`: the count of writes this session had made when
+    /// it was written, so one written again is tagged anew.
+    tags: BTreeMap<String, u64>,
+    writes: u64,
     timeout: Option<Duration>,
 }
 
@@ -51,6 +55,8 @@ impl Session {
         Ok(Self {
             signer: Signer::new(account, key_base64)?,
             blobs: BTreeMap::new(),
+            tags: BTreeMap::new(),
+            writes: 0,
             timeout: None,
         })
     }
@@ -104,15 +110,15 @@ impl Session {
             .unwrap_or_default()
             .to_string();
         let under = format!("{container}/{prefix}");
-        let names: Vec<String> = self
-            .blobs
-            .keys()
-            .filter(|held| held.starts_with(&under))
-            .map(|held| held[container.len() + 1..].to_string())
+        let listed: Vec<(String, String)> = self
+            .tags
+            .iter()
+            .filter(|(held, _)| held.starts_with(&under))
+            .map(|(held, written)| (held[container.len() + 1..].to_string(), etag(*written)))
             .collect();
         let response = Response::new(200)
             .header("Content-Type", "application/xml")
-            .body(xml::listing(container, &prefix, &names).as_bytes());
+            .body(xml::listing(container, &prefix, &listed).as_bytes());
         (
             Event::Listed {
                 container: container.to_string(),
@@ -136,17 +142,21 @@ impl Session {
     }
 
     fn put(&mut self, container: &str, blob: &str, bytes: &[u8]) -> (Event, Response) {
-        self.blobs
-            .insert(format!("{container}/{blob}"), bytes.to_vec());
+        let held = format!("{container}/{blob}");
+        self.writes += 1;
+        self.tags.insert(held.clone(), self.writes);
+        self.blobs.insert(held, bytes.to_vec());
         (
             Event::Stored(Taken::new(origin(container, blob), bytes)),
-            Response::new(201).header("ETag", "\"xmip\""),
+            Response::new(201).header("ETag", &format!("\"{}\"", etag(self.writes))),
         )
     }
 
     fn delete(&mut self, container: &str, blob: &str) -> (Event, Response) {
         // Unlike S3, the Blob service says when there was nothing to delete.
-        match self.blobs.remove(&format!("{container}/{blob}")) {
+        let held = format!("{container}/{blob}");
+        self.tags.remove(&held);
+        match self.blobs.remove(&held) {
             Some(_) => (Event::Deleted(origin(container, blob)), Response::new(202)),
             None => refused(404, "BlobNotFound", "The specified blob does not exist."),
         }
@@ -155,6 +165,12 @@ impl Session {
 
 fn origin(container: &str, blob: &str) -> String {
     format!("azure-blob://{container}/{blob}")
+}
+
+/// The `Etag` of the `written`th write, as a listing shows one: hex, and
+/// unquoted there.
+fn etag(written: u64) -> String {
+    format!("0x{written:X}")
 }
 
 fn refused(status: u16, code: &str, message: &str) -> (Event, Response) {
@@ -196,8 +212,18 @@ mod tests {
             event,
             Event::Stored(Taken::new("azure-blob://c/b", b"x".to_vec()))
         );
+        assert_eq!(response.header_value("ETag"), Some("\"0x1\""));
+        let (_, response) = session.answer(&signed(Request::new("PUT", "/c/b").body(b"x")));
+        assert_eq!(
+            response.header_value("ETag"),
+            Some("\"0x2\""),
+            "written again"
+        );
         let (_, response) = session.answer(&signed(listing("b")));
-        assert!(response.text().expect("text").contains("<Name>b</Name>"));
+        let listed = xml::BLOBS
+            .objects(response.text().expect("text"))
+            .expect("read");
+        assert_eq!(listed, [("b".to_string(), "0x2".to_string())]);
         let (_, response) = session.answer(&signed(listing("z")));
         assert!(!response.text().expect("text").contains("<Name>"));
         let (event, response) = session.answer(&signed(Request::new("DELETE", "/c/b")));
