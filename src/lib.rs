@@ -6,9 +6,11 @@
 //! Blob Storage is the drop box of every organisation that lives in Azure,
 //! and its REST API is four calls on a container: list under a prefix, get,
 //! put, delete. A Receive Location lists a prefix, gets each blob as the
-//! runtime first reads it, and deletes it once the runtime accepts or
-//! refuses it after the whole receive cycle — one whose cycle failed stays
-//! for the next receive; a Send Location puts a Stream as a block blob.
+//! runtime first reads it, and deletes it once the runtime accepts it after
+//! the whole receive cycle — one refused stays where it lies and is not
+//! received again while its `Etag` is unchanged, one whose cycle failed
+//! stays for the next receive; a Send Location puts a Stream as a block
+//! blob.
 //! Both are Shared Key over plain HTTP/1.1 on a socket — `https://` with
 //! the `tls` feature, which is the http technology's TLS (ADR-0033).
 //!
@@ -70,6 +72,9 @@ pub struct AzureBlobTransport {
     /// The connections kept to the service, shared by every client this
     /// makes.
     connections: Connections,
+    /// The blobs this Location refused and left in the container, each
+    /// with its `Etag`; a clone shares them.
+    refused: transport::Refused<String, String>,
 }
 
 impl AzureBlobTransport {
@@ -85,6 +90,7 @@ impl AzureBlobTransport {
             prefix: String::new(),
             timeout: None,
             connections: Connections::new(),
+            refused: transport::Refused::default(),
         }
     }
 
@@ -162,10 +168,13 @@ impl Transport for AzureBlobTransport {
     /// one object-store receive: the receive gets and deletes nothing, each
     /// blob's `GET` is made when the runtime first reads its body — whole,
     /// `net::http` reads a `GET` body whole — and its acknowledgement
-    /// deletes it on [`transport::Verdict::Accepted`] and
-    /// [`transport::Verdict::Refused`] (a container has no place for a rejected
-    /// blob) and leaves it on [`transport::Verdict::Failed`], for the next
-    /// receive to list and get again.
+    /// deletes it on [`transport::Verdict::Accepted`] only. On
+    /// [`transport::Verdict::Refused`] it is left where it lies and this
+    /// Location does not receive it again while its `Etag` is unchanged —
+    /// one written again is a new arrival; the memory is the node
+    /// process's, so a node started again receives it once more. On
+    /// [`transport::Verdict::Failed`] it is left for the next receive to
+    /// list and get again.
     fn receive(&self) -> Result<Vec<Arrived>> {
         let client = Arc::new(self.client()?);
         let (getting, deleting) = (Arc::clone(&client), Arc::clone(&client));
@@ -176,6 +185,7 @@ impl Transport for AzureBlobTransport {
         );
         listed(
             || client.list(container, &self.prefix),
+            &self.refused,
             |blob| format!("azure-blob://{container}/{blob}"),
             move |blob| getting.get(&getting_from, blob),
             move |blob| deleting.delete(&deleting_from, blob),
@@ -352,16 +362,16 @@ mod tests {
     }
 
     #[test]
-    fn a_blob_is_got_when_read_and_deleted_when_accepted_or_refused_and_kept_when_failed() {
+    fn a_blob_is_got_when_read_deleted_when_accepted_and_left_when_refused_or_failed() {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
         let near = node(&format!("http://{address}"), KEY);
-        // Three puts; a list, the one get read, two deletes; a list, a get,
-        // a delete.
+        // Three puts; a list, the one get read, its delete; a list, a get, a
+        // delete; a list to see what is left.
         let far_end = serve(near.session().expect("base64"), listener, 10);
         near.send("in/1.edi", b"UNA:+.? '").expect("a name alone");
         near.send("azure-blob://orders/in/2.edi", b"")
             .expect("a full target");
-        near.send("in/3.edi", b"C3").expect("a name alone");
+        near.send("in/3.edi", b"third").expect("a name alone");
         let mut arrived = near.receive().expect("received");
         arrived.sort_by(|a, b| a.origin_uri.cmp(&b.origin_uri));
         assert_eq!(arrived.len(), 3);
@@ -375,14 +385,24 @@ mod tests {
         second.failed().expect("left");
         third
             .refused(transport::Refusal::Unacceptable)
-            .expect("deleted");
+            .expect("left");
         let again = near.receive().expect("received again");
-        assert_eq!(again.len(), 1, "the failed one, and only it");
+        assert_eq!(again.len(), 1, "the failed one, not the refused one");
         let again = again.into_iter().next().expect("one").taken().expect("ok");
         assert_eq!(again.origin_uri, "azure-blob://orders/in/2.edi");
         assert!(again.bytes.is_empty());
+        let left = near
+            .client()
+            .expect("client")
+            .list("orders", "in/")
+            .expect("list");
+        assert_eq!(
+            left,
+            [("in/3.edi".to_string(), "0x3".to_string())],
+            "still there"
+        );
         let (session, events) = far_end.join().expect("thread");
-        assert!(session.blobs().is_empty(), "deleted once answered");
+        assert_eq!(session.blobs().len(), 1, "only the refused one is held");
         assert_eq!(
             events[0],
             Event::Stored(Taken::new(
@@ -393,22 +413,46 @@ mod tests {
         let named = |blob: &str| format!("azure-blob://orders/in/{blob}");
         assert!(matches!(events[3], Event::Listed { .. }));
         assert_eq!(
-            events[4..7],
+            events[4..6],
             [
                 Event::Retrieved(named("1.edi")),
-                Event::Deleted(named("1.edi")),
-                Event::Deleted(named("3.edi")),
+                Event::Deleted(named("1.edi"))
             ],
-            "only what was read was got"
+            "only what was read was got, only what was accepted deleted"
         );
-        assert!(matches!(events[7], Event::Listed { .. }));
+        assert!(matches!(events[6], Event::Listed { .. }));
         assert_eq!(
-            events[8..],
+            events[7..9],
             [
                 Event::Retrieved(named("2.edi")),
                 Event::Deleted(named("2.edi"))
             ]
         );
+        assert!(matches!(events[9], Event::Listed { .. }));
+    }
+
+    #[test]
+    fn a_refused_blob_is_not_received_again_until_it_is_written_again() {
+        let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
+        let near = node(&format!("http://{address}"), KEY);
+        // A put; a list; a list; a put again; a list, a get, a delete.
+        let far_end = serve(near.session().expect("base64"), listener, 7);
+        near.send("in/1.edi", b"first").expect("put");
+        let refused = near.receive().expect("received").remove(0);
+        refused
+            .refused(transport::Refusal::Forbidden)
+            .expect("left");
+        assert!(near.receive().expect("listed").is_empty(), "unchanged");
+        near.send("in/1.edi", b"second").expect("written again");
+        let again = near
+            .receive()
+            .expect("listed")
+            .remove(0)
+            .taken()
+            .expect("ok");
+        assert_eq!(again.bytes, b"second", "another Etag, a new arrival");
+        let (session, _) = far_end.join().expect("thread");
+        assert!(session.blobs().is_empty(), "accepted, so deleted");
     }
 
     #[test]

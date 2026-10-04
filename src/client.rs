@@ -55,19 +55,19 @@ impl Client {
         self
     }
 
-    /// The blobs under `prefix` in `container`, as many as one listing
-    /// carries — five thousand — so a fuller prefix is taken that many at a
-    /// time.
+    /// The blobs under `prefix` in `container`, each with its `Etag`, as
+    /// many as one listing carries — five thousand — so a fuller prefix is
+    /// taken that many at a time.
     ///
     /// # Errors
     /// Where the endpoint refused, could not be reached, or did not answer
-    /// with a listing.
-    pub fn list(&self, container: &str, prefix: &str) -> Result<Vec<String>> {
+    /// with a listing naming each blob's `Etag`.
+    pub fn list(&self, container: &str, prefix: &str) -> Result<Vec<(String, String)>> {
         let request = Request::new("GET", format!("/{}", encode(container, false)))
             .query("restype", "container")
             .query("comp", "list")
             .query("prefix", prefix);
-        Ok(codec::xml::texts(self.call(request)?.text()?, "Name")?)
+        crate::xml::BLOBS.objects(self.call(request)?.text()?)
     }
 
     /// The blob at `blob` in `container`.
@@ -162,7 +162,8 @@ mod tests {
         client.put("orders", "out/c.edi", b"UNB").expect("put");
         assert_eq!(
             client.list("orders", "in/").expect("list"),
-            vec!["in/a b.edi".to_string()]
+            vec![("in/a b.edi".to_string(), "0x1".to_string())],
+            "the first blob written"
         );
         assert_eq!(client.get("orders", "in/a b.edi").expect("get"), b"UNA");
         client.delete("orders", "in/a b.edi").expect("delete");
