@@ -46,6 +46,7 @@ pub use client::Client;
 use http::endpoint::Connections;
 use net::{Endpoint, Target};
 pub use session::{Event, Session};
+use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
 use transport::listed::listed;
 use transport::listening::Listening;
@@ -273,6 +274,12 @@ impl AzureBlobTransport {
 }
 
 impl Loopback for AzureBlobTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "an object names no sender: the bucket it was taken from is in its origin",
+        )
+    }
+
     /// A bound session waiting for its one store. The Blob service opens a
     /// connection per call, so the session serves one request at a time
     /// until one stored.
