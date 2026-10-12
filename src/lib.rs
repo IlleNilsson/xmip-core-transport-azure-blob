@@ -165,6 +165,10 @@ impl Transport for AzureBlobTransport {
         transport::Arrivals::Ordered("a receive lists again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a receive lists the container and returns")
+    }
+
     /// Every blob under the prefix, listed by [`listed`], the capability's
     /// one object-store receive: the receive gets and deletes nothing, each
     /// blob's `GET` is made when the runtime first reads its body — whole,
