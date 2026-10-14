@@ -67,12 +67,10 @@ mod tests {
         assert!(xml.contains("<Name>in/a&amp;b.edi</Name><Properties><Etag>0x1</Etag>"));
         assert_eq!(BLOBS.objects(&xml).expect("read"), held);
         assert_eq!(text(&xml, "Prefix").expect("read").as_deref(), Some("in/"));
-        assert!(texts(&xml, "Absent").expect("read").is_empty());
-        assert!(
-            BLOBS
-                .objects("<Blob><Name>unclosed")
-                .expect("read")
-                .is_empty()
+        assert_eq!(texts(&xml, "Absent").expect("read"), [] as [String; 0]);
+        assert_eq!(
+            BLOBS.objects("<Blob><Name>unclosed").expect("read"),
+            [] as [(String, String); 0]
         );
         let untagged = BLOBS
             .objects("<Blob><Name>b</Name><Properties /></Blob>")
