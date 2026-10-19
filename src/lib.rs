@@ -180,7 +180,7 @@ impl Transport for AzureBlobTransport {
     /// process's, so a node started again receives it once more. On
     /// [`transport::Verdict::Failed`] it is left for the next receive to
     /// list and get again.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         let client = Arc::new(self.client()?);
         let (getting, deleting) = (Arc::clone(&client), Arc::clone(&client));
         let (container, getting_from, deleting_from) = (
@@ -190,6 +190,7 @@ impl Transport for AzureBlobTransport {
         );
         listed(
             || client.list(container, &self.prefix),
+            most,
             &self.refused,
             |blob| format!("azure-blob://{container}/{blob}"),
             move |blob| getting.get(&getting_from, blob),
@@ -197,7 +198,14 @@ impl Transport for AzureBlobTransport {
         )
     }
 
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "the HTTP client writes a request whole, its length counted from it",
+        )
+    }
+
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let (container, blob) = self.resolve(target);
         self.client()?.put(container, blob, bytes)
     }
