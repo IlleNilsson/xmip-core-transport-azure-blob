@@ -3,7 +3,7 @@
 //! Streams that arrive as blobs in an Azure container. One blob is one
 //! Stream, its name kept beside it.
 //!
-//! Blob Storage is the drop box of every organisation that lives in Azure,
+//! Blob Storage is the drop box of every organization that lives in Azure,
 //! and its REST API is four calls on a container: list under a prefix, get,
 //! put, delete. A Receive Location lists a prefix, gets each blob as the
 //! runtime first reads it, and deletes it once the runtime accepts it after
@@ -20,7 +20,7 @@
 //! session.rs     the far end a test or the playground runs on loopback
 //! ```
 //!
-//! The endpoint, HTTP itself, the RFC 1123 date and the judgement of an
+//! The endpoint, HTTP itself, the RFC 1123 date and the judgment of an
 //! answer come from the http technology, the percent-encoding from `net`,
 //! Shared Key from the Azure crate, the flat XML scan from the capability (ADR-0044).
 //! Shared Key lived here until the owner's ruling of 2026-09-22 put what
@@ -498,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn blobs_are_artefacts_without_a_lock_and_an_unreachable_endpoint_is_retryable() {
+    fn blobs_are_artifacts_without_a_lock_and_an_unreachable_endpoint_is_retryable() {
         let near = node("http://127.0.0.1:1", KEY);
         assert!(near.claims().is_some());
         assert_eq!(near.name(), "azure-blob");
