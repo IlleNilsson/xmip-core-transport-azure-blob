@@ -10,11 +10,11 @@ use std::time::Duration;
 use transport::error::Result;
 
 use azure::shared_key::{self, Signer};
+use codec::percent::encode;
 use http::endpoint::{Connections, Offer};
 use http::status;
 use net::Endpoint;
 use net::http::{Request, Response};
-use net::percent::encode;
 
 pub struct Client {
     endpoint: Endpoint,

@@ -17,9 +17,9 @@ use transport::error::Result;
 
 use crate::xml;
 use azure::shared_key::Signer;
+use codec::percent::decode;
 use http::server;
 use net::http::{Request, Response};
-use net::percent::decode;
 
 /// What the client did, as [`Session::serve_one`] reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
