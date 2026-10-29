@@ -146,7 +146,7 @@ impl AzureBlobTransport {
     /// `azure-blob://container/blob` — or is a name alone in this
     /// transport's container.
     fn resolve<'a>(&'a self, target: &'a str) -> (&'a str, &'a str) {
-        Target::under(&["azure-blob"], target).map_or((&self.container, target), |named| {
+        Target::under(Self::SCHEMES, target).map_or((&self.container, target), |named| {
             (named.authority(), named.path())
         })
     }
@@ -255,6 +255,9 @@ impl Configured for AzureBlobTransport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["azure-blob"];
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         // The account key comes through the Location's credentials.
