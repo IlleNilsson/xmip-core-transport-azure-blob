@@ -17,7 +17,7 @@
 //! ```text
 //! xml.rs         the enumeration and the error, picked by hand
 //! client.rs      Xmip's side: list, get, put, delete
-//! session.rs     the far end a test or the playground runs on loopback
+//! session.rs     the far end a test or the essentials runs on loopback
 //! ```
 //!
 //! The endpoint, HTTP itself, the RFC 1123 date and the judgment of an
@@ -130,7 +130,7 @@ impl AzureBlobTransport {
     }
 
     /// A far end that holds this transport's account and key, for a test
-    /// or the playground to run on loopback.
+    /// or the essentials to run on loopback.
     ///
     /// # Errors
     /// Where the key is not base64.
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(pair.ceiling(), None);
     }
 
-    /// The Playground's edge payloads, written here so the crate does not
+    /// The Essentials' edge payloads, written here so the crate does not
     /// depend on it.
     fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
         vec![
