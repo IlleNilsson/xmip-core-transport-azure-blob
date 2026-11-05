@@ -1,5 +1,5 @@
 //! The far end: enough of the Blob service to answer one Location, and what
-//! a test or the playground puts on loopback.
+//! a test or the essentials puts on loopback.
 //!
 //! Not Azure. One session holds blobs in memory, verifies every request
 //! against one account key, and answers the four calls with the shapes the
