@@ -139,6 +139,7 @@ fn judge(response: Response) -> Result<Response> {
 mod tests {
     use super::*;
     use crate::session::{Event, Session};
+    use std::assert_matches;
     use transport::socket;
 
     const KEY: &str = "c2VjcmV0";
@@ -172,7 +173,7 @@ mod tests {
         assert!(!missing.retryable);
         let (session, events) = far_end.join().expect("thread");
         assert_eq!(session.blobs().len(), 1);
-        assert!(matches!(&events[2], Event::Listed { prefix, .. } if prefix == "in/"));
+        assert_matches!(&events[2], Event::Listed { prefix, .. } if prefix == "in/");
         let origin = "azure-blob://orders/in/a b.edi".to_string();
         assert_eq!(events[3], Event::Retrieved(origin.clone()));
         assert_eq!(events[4], Event::Deleted(origin));
