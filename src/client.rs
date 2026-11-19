@@ -1,13 +1,26 @@
-//! Xmip's side: the four calls a Location makes, each one signed request
-//! over one connection.
+//! Xmip's side: the calls a Location and an archive make, each one signed
+//! request over one connection.
 //!
 //! The endpoint carries the account — `https://account.blob.core.windows.net`
 //! in the cloud, `http://127.0.0.1:10000` for Azurite or a test — and the
 //! path names the container and the blob under it.
+//!
+//! A receive gets and deletes a blob only as it was listed: Get Blob and
+//! Delete Blob carry `If-Match` with the `Etag` the listing gave, and the
+//! service answers 412 `ConditionNotMet` where the blob was written again
+//! since and 404 `BlobNotFound` where it is gone. An archive writes a blob
+//! only where none lies: Put Blob carries `If-None-Match: *`, which the
+//! conditional-header tables answer with 412 where a blob is there and the
+//! service with 409 `BlobAlreadyExists`. Microsoft's sources are pages of
+//! <https://learn.microsoft.com/en-us/rest/api/storageservices/>:
+//! `specifying-conditional-headers-for-blob-service-operations`,
+//! `get-blob`, `delete-blob`, `put-blob` and `blob-service-error-codes`.
+//! Shared Key signs both headers (`azure::shared_key`).
 
 use std::time::Duration;
 
 use transport::error::Result;
+use transport::listed::AsListed;
 
 use azure::shared_key::{self, Signer};
 use codec::percent::encode;
@@ -70,46 +83,91 @@ impl Client {
         crate::xml::BLOBS.objects(self.call(request)?.text()?)
     }
 
-    /// The blob at `blob` in `container`.
+    /// The blob at `blob` in `container`, or none where there is none.
     ///
     /// # Errors
-    /// Where there is no such blob, or the endpoint refused or could not be
-    /// reached.
-    pub fn get(&self, container: &str, blob: &str) -> Result<Vec<u8>> {
-        Ok(self.call(Request::new("GET", path(container, blob)))?.body)
+    /// Where the endpoint refused or could not be reached.
+    pub fn get(&self, container: &str, blob: &str) -> Result<Option<Vec<u8>>> {
+        let answer = self.exchange(Request::new("GET", path(container, blob)))?;
+        if coded(&answer, 404, "BlobNotFound") {
+            return Ok(None);
+        }
+        Ok(Some(judge(answer)?.body))
     }
 
-    /// Store `bytes` as the block blob at `blob` in `container`.
+    /// The blob at `blob` in `container` as long as it bears `etag`, the
+    /// `Etag` its listing gave it: Get Blob with `If-Match`. One written
+    /// again or deleted since is [`AsListed::Changed`], and nothing is read.
+    ///
+    /// # Errors
+    /// Where the endpoint refused or could not be reached.
+    pub fn get_as_listed(
+        &self,
+        container: &str,
+        blob: &str,
+        etag: &str,
+    ) -> Result<AsListed<Vec<u8>>> {
+        let request = Request::new("GET", path(container, blob)).header("If-Match", &quoted(etag));
+        Ok(match as_listed(self.exchange(request)?)? {
+            AsListed::Held(answer) => AsListed::Held(answer.body),
+            AsListed::Changed => AsListed::Changed,
+        })
+    }
+
+    /// Delete the blob at `blob` in `container` as long as it bears `etag`,
+    /// the `Etag` its listing gave it: Delete Blob with `If-Match`. One
+    /// written again or deleted since is [`AsListed::Changed`], and nothing
+    /// is deleted.
+    ///
+    /// # Errors
+    /// Where the endpoint refused or could not be reached.
+    pub fn delete_as_listed(
+        &self,
+        container: &str,
+        blob: &str,
+        etag: &str,
+    ) -> Result<AsListed<()>> {
+        let request =
+            Request::new("DELETE", path(container, blob)).header("If-Match", &quoted(etag));
+        Ok(match as_listed(self.exchange(request)?)? {
+            AsListed::Held(_) => AsListed::Held(()),
+            AsListed::Changed => AsListed::Changed,
+        })
+    }
+
+    /// Store `bytes` as the block blob at `blob` in `container`, over any
+    /// blob already there.
     ///
     /// # Errors
     /// Where the endpoint refused or could not be reached.
     pub fn put(&self, container: &str, blob: &str, bytes: &[u8]) -> Result<()> {
-        let request = Request::new("PUT", path(container, blob))
-            .header("Content-Type", "application/octet-stream")
-            .header("x-ms-blob-type", "BlockBlob")
-            .body(bytes);
-        self.call(request).map(|_| ())
+        self.call(block_blob(container, blob, bytes)).map(|_| ())
     }
 
-    /// Delete the blob at `blob` in `container`.
+    /// Store `bytes` as the block blob at `blob` in `container` where no
+    /// blob lies, never over one: Put Blob with `If-None-Match: *`. Whether
+    /// it was stored: `false` where a blob was there, which is left as it
+    /// was.
     ///
     /// # Errors
-    /// Where there is no such blob, or the endpoint refused or could not be
-    /// reached.
-    pub fn delete(&self, container: &str, blob: &str) -> Result<()> {
-        self.call(Request::new("DELETE", path(container, blob)))
-            .map(|_| ())
+    /// Where the endpoint refused or could not be reached.
+    pub fn put_new(&self, container: &str, blob: &str, bytes: &[u8]) -> Result<bool> {
+        let request = block_blob(container, blob, bytes).header("If-None-Match", "*");
+        created(self.exchange(request)?)
     }
 
     fn call(&self, request: Request) -> Result<Response> {
+        judge(self.exchange(request)?)
+    }
+
+    /// `request` signed and sent, its answer as it came.
+    fn exchange(&self, request: Request) -> Result<Response> {
         let signed = self.signer.sign(
             request.header("Host", &self.endpoint.authority()),
             &shared_key::now(),
         );
-        let answer =
-            self.connections
-                .exchange(&self.endpoint, self.timeout, Offer::Http11, &signed)?;
-        judge(answer)
+        self.connections
+            .exchange(&self.endpoint, self.timeout, Offer::Http11, &signed)
     }
 }
 
@@ -117,22 +175,67 @@ fn path(container: &str, blob: &str) -> String {
     format!("/{}/{}", encode(container, false), encode(blob, true))
 }
 
+/// A Put Blob of `bytes` as a block blob.
+fn block_blob(container: &str, blob: &str, bytes: &[u8]) -> Request {
+    Request::new("PUT", path(container, blob))
+        .header("Content-Type", "application/octet-stream")
+        .header("x-ms-blob-type", "BlockBlob")
+        .body(bytes)
+}
+
+/// An `Etag` as `If-Match` carries it: quoted, as the service writes it in
+/// a header since version 2011-08-18, where a listing gave it bare.
+fn quoted(etag: &str) -> String {
+    if etag.starts_with('"') {
+        etag.to_string()
+    } else {
+        format!("\"{etag}\"")
+    }
+}
+
+/// A conditional get's or delete's answer: 412 `ConditionNotMet`, written
+/// again since, and 404 `BlobNotFound`, gone since, are
+/// [`AsListed::Changed`]; anything else is judged. Another 412 — a lease's
+/// — or another 404 — a container's — is the failure it is.
+fn as_listed(answer: Response) -> Result<AsListed<Response>> {
+    if coded(&answer, 412, "ConditionNotMet") || coded(&answer, 404, "BlobNotFound") {
+        return Ok(AsListed::Changed);
+    }
+    judge(answer).map(AsListed::Held)
+}
+
+/// A create's answer: whether it stored the blob. 412 `ConditionNotMet`,
+/// as the conditional-header tables have it, and 409 `BlobAlreadyExists`,
+/// as the service answers, both say a blob was there.
+fn created(answer: Response) -> Result<bool> {
+    if coded(&answer, 412, "ConditionNotMet") || coded(&answer, 409, "BlobAlreadyExists") {
+        return Ok(false);
+    }
+    judge(answer).map(|_| true)
+}
+
+/// Whether `answer` is `status` with `code` in its body. The status is
+/// asked first, so a blob's own bytes are never scanned for a code.
+fn coded(answer: &Response, status: u16, code: &str) -> bool {
+    answer.status == status && error_code(answer) == code
+}
+
+/// The code the service put in an error's body; empty where there is none.
+fn error_code(answer: &Response) -> String {
+    answer
+        .text()
+        .ok()
+        .and_then(|xml| codec::xml::text(xml, "Code").ok().flatten())
+        .unwrap_or_default()
+}
+
 /// A 2xx answer as it is; anything else as a failure naming the status and
 /// the code the service put in the body, retryable where HTTP or the
 /// service says come back.
 fn judge(response: Response) -> Result<Response> {
-    status::judge(
-        "the Blob service",
-        response,
-        |answer| {
-            answer
-                .text()
-                .ok()
-                .and_then(|xml| codec::xml::text(xml, "Code").ok().flatten())
-                .unwrap_or_default()
-        },
-        |code| code == "ServerBusy",
-    )
+    status::judge("the Blob service", response, error_code, |code| {
+        code == "ServerBusy"
+    })
 }
 
 #[cfg(test)]
@@ -145,13 +248,13 @@ mod tests {
     const KEY: &str = "c2VjcmV0";
 
     #[test]
-    fn the_four_calls_reach_a_session_and_come_back_shaped_as_azure_shapes_them() {
+    fn the_calls_reach_a_session_and_come_back_shaped_as_azure_shapes_them() {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
         let far_end = std::thread::spawn(move || {
             let mut session = Session::new("acct", KEY)
                 .expect("base64")
                 .timing_out_after(Duration::from_secs(2));
-            let events: Vec<Event> = (0..6)
+            let events: Vec<Event> = (0..8)
                 .map(|_| session.serve_one(&listener).expect("served"))
                 .collect();
             (session, events)
@@ -160,24 +263,84 @@ mod tests {
             .expect("endpoint")
             .timing_out_after(Duration::from_secs(2));
         client.put("orders", "in/a b.edi", b"UNA").expect("put");
-        client.put("orders", "out/c.edi", b"UNB").expect("put");
+        assert!(client.put_new("orders", "out/c.edi", b"UNB").expect("put"));
+        assert!(
+            !client.put_new("orders", "out/c.edi", b"UNC").expect("put"),
+            "one is there"
+        );
         assert_eq!(
             client.list("orders", "in/").expect("list"),
             vec![("in/a b.edi".to_string(), "0x1".to_string())],
             "the first blob written"
         );
-        assert_eq!(client.get("orders", "in/a b.edi").expect("get"), b"UNA");
-        client.delete("orders", "in/a b.edi").expect("delete");
-        let missing = client.get("orders", "in/a b.edi").expect_err("gone");
-        assert!(missing.message.contains("404 BlobNotFound"), "{missing}");
-        assert!(!missing.retryable);
+        let got = client.get_as_listed("orders", "in/a b.edi", "0x1");
+        assert!(matches!(got, Ok(AsListed::Held(ref bytes)) if bytes == b"UNA"));
+        let deleted = client.delete_as_listed("orders", "in/a b.edi", "0x1");
+        assert!(matches!(deleted, Ok(AsListed::Held(()))));
+        assert_eq!(client.get("orders", "in/a b.edi").expect("none"), None);
+        assert_eq!(
+            client.get("orders", "out/c.edi").expect("one"),
+            Some(b"UNB".to_vec()),
+            "the first written stays"
+        );
         let (session, events) = far_end.join().expect("thread");
         assert_eq!(session.blobs().len(), 1);
-        assert_matches!(&events[2], Event::Listed { prefix, .. } if prefix == "in/");
+        assert_eq!(events[2], Event::Refused("BlobAlreadyExists".to_string()));
+        assert_matches!(&events[3], Event::Listed { prefix, .. } if prefix == "in/");
         let origin = "azure-blob://orders/in/a b.edi".to_string();
-        assert_eq!(events[3], Event::Retrieved(origin.clone()));
-        assert_eq!(events[4], Event::Deleted(origin));
-        assert_eq!(events[5], Event::Refused("BlobNotFound".to_string()));
+        assert_eq!(events[4], Event::Retrieved(origin.clone()));
+        assert_eq!(events[5], Event::Deleted(origin));
+        assert_eq!(events[6], Event::Refused("BlobNotFound".to_string()));
+    }
+
+    #[test]
+    fn a_changed_blob_and_one_already_there_are_answers_and_any_other_refusal_fails() {
+        let error =
+            |status, code| Response::new(status).body(crate::xml::error(code, "").as_bytes());
+        assert!(matches!(
+            as_listed(error(412, "ConditionNotMet")),
+            Ok(AsListed::Changed)
+        ));
+        assert!(matches!(
+            as_listed(error(404, "BlobNotFound")),
+            Ok(AsListed::Changed)
+        ));
+        assert!(matches!(
+            as_listed(Response::new(202)),
+            Ok(AsListed::Held(_))
+        ));
+        for (status, code) in [
+            (404, "ContainerNotFound"),
+            (412, "LeaseIdMissing"),
+            (409, "BlobAlreadyExists"),
+            (403, "AuthenticationFailed"),
+        ] {
+            let failure = as_listed(error(status, code)).err().expect(code);
+            assert!(
+                failure.message.contains(&format!("{status} {code}")),
+                "{failure}"
+            );
+        }
+        assert!(created(Response::new(201)).expect("stored"));
+        assert!(!created(error(409, "BlobAlreadyExists")).expect("there"));
+        assert!(!created(error(412, "ConditionNotMet")).expect("there"));
+        for (status, code) in [
+            (409, "BlobImmutableDueToPolicy"),
+            (412, "LeaseIdMissing"),
+            (404, "ContainerNotFound"),
+        ] {
+            assert!(created(error(status, code)).is_err(), "{code}");
+        }
+        assert!(
+            !coded(
+                &Response::new(200).body(b"<Code>BlobNotFound</Code>"),
+                404,
+                "BlobNotFound"
+            ),
+            "a blob's bytes are not an error"
+        );
+        assert_eq!(quoted("0x1"), "\"0x1\"");
+        assert_eq!(quoted("\"0x1\""), "\"0x1\"");
     }
 
     #[test]

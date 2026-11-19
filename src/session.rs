@@ -4,9 +4,10 @@
 //! Not Azure. One session holds blobs in memory, verifies every request
 //! against one account key, and answers the four calls with the shapes the
 //! service answers them — the enumeration, the blob, the error with its
-//! code in the body and in `x-ms-error-code`. A Location that needs
-//! durability, leases or a second account talks to the service through
-//! [`crate::Client`].
+//! code in the body and in `x-ms-error-code` — holding a get or a delete to
+//! the `If-Match` it carries and a put to its `If-None-Match: *`, as the
+//! service does. A Location that needs durability, leases or a second
+//! account talks to the service through [`crate::Client`].
 
 use std::collections::BTreeMap;
 use std::net::TcpListener;
@@ -15,7 +16,7 @@ use std::time::Duration;
 use transport::Taken;
 use transport::error::Result;
 
-use crate::xml;
+use crate::{origin, xml};
 use azure::shared_key::Signer;
 use codec::percent::decode;
 use http::server;
@@ -102,9 +103,9 @@ impl Session {
         let listing = request.query_value("comp") == Some("list");
         match (request.method.as_str(), blob.is_empty()) {
             ("GET", true) if listing => self.list(container, request),
-            ("GET", false) => self.get(container, blob),
-            ("PUT", false) => self.put(container, blob, &request.body),
-            ("DELETE", false) => self.delete(container, blob),
+            ("GET", false) => self.get(container, blob, request),
+            ("PUT", false) => self.put(container, blob, request),
+            ("DELETE", false) => self.delete(container, blob, request),
             _ => refused(405, "UnsupportedHttpVerb", "not one of the four calls"),
         }
     }
@@ -133,8 +134,12 @@ impl Session {
         )
     }
 
-    fn get(&self, container: &str, blob: &str) -> (Event, Response) {
-        match self.blobs.get(&format!("{container}/{blob}")) {
+    fn get(&self, container: &str, blob: &str, request: &Request) -> (Event, Response) {
+        let held = format!("{container}/{blob}");
+        if let Some(unmet) = self.unmet(&held, request) {
+            return unmet;
+        }
+        match self.blobs.get(&held) {
             Some(bytes) => (
                 Event::Retrieved(origin(container, blob)),
                 Response::new(200)
@@ -142,34 +147,69 @@ impl Session {
                     .header("x-ms-blob-type", "BlockBlob")
                     .body(bytes),
             ),
-            None => refused(404, "BlobNotFound", "The specified blob does not exist."),
+            None => not_found(),
         }
     }
 
-    fn put(&mut self, container: &str, blob: &str, bytes: &[u8]) -> (Event, Response) {
+    fn put(&mut self, container: &str, blob: &str, request: &Request) -> (Event, Response) {
         let held = format!("{container}/{blob}");
+        if let Some(unmet) = self.unmet(&held, request) {
+            return unmet;
+        }
         self.writes += 1;
         self.tags.insert(held.clone(), self.writes);
-        self.blobs.insert(held, bytes.to_vec());
+        self.blobs.insert(held, request.body.clone());
         (
-            Event::Stored(Taken::new(origin(container, blob), bytes)),
+            Event::Stored(Taken::new(origin(container, blob), request.body.clone())),
             Response::new(201).header("ETag", &format!("\"{}\"", etag(self.writes))),
         )
     }
 
-    fn delete(&mut self, container: &str, blob: &str) -> (Event, Response) {
+    fn delete(&mut self, container: &str, blob: &str, request: &Request) -> (Event, Response) {
         // Unlike S3, the Blob service says when there was nothing to delete.
         let held = format!("{container}/{blob}");
+        if let Some(unmet) = self.unmet(&held, request) {
+            return unmet;
+        }
         self.tags.remove(&held);
         match self.blobs.remove(&held) {
             Some(_) => (Event::Deleted(origin(container, blob)), Response::new(202)),
-            None => refused(404, "BlobNotFound", "The specified blob does not exist."),
+            None => not_found(),
         }
+    }
+
+    /// The service's answer where the blob at `held` does not meet the
+    /// condition `request` carries: an `If-Match` on no blob is 404
+    /// `BlobNotFound` and on another `Etag` 412 `ConditionNotMet`, quoted or
+    /// not; an `If-None-Match: *` on a blob that is there is 409
+    /// `BlobAlreadyExists`, which is what the service answers a Put Blob
+    /// with it (Blob Storage error codes,
+    /// <https://learn.microsoft.com/en-us/rest/api/storageservices/blob-service-error-codes>).
+    fn unmet(&self, held: &str, request: &Request) -> Option<(Event, Response)> {
+        let written = self.tags.get(held);
+        if let Some(wanted) = request.header_value("If-Match") {
+            return match written {
+                None => Some(not_found()),
+                Some(written) if wanted.trim_matches('"') != etag(*written) => Some(refused(
+                    412,
+                    "ConditionNotMet",
+                    "The condition specified using HTTP conditional header(s) is not met.",
+                )),
+                Some(_) => None,
+            };
+        }
+        (request.header_value("If-None-Match") == Some("*") && written.is_some()).then(|| {
+            refused(
+                409,
+                "BlobAlreadyExists",
+                "The specified blob already exists.",
+            )
+        })
     }
 }
 
-fn origin(container: &str, blob: &str) -> String {
-    format!("azure-blob://{container}/{blob}")
+fn not_found() -> (Event, Response) {
+    refused(404, "BlobNotFound", "The specified blob does not exist.")
 }
 
 /// The `Etag` of the `written`th write, as a listing shows one: hex, and
@@ -256,5 +296,44 @@ mod tests {
             response.status, 405,
             "a container GET that is not a listing"
         );
+    }
+
+    #[test]
+    fn a_session_holds_a_request_to_the_condition_it_carries() {
+        let mut session = Session::new("acct", KEY).expect("base64");
+        let create = || {
+            Request::new("PUT", "/c/b")
+                .header("If-None-Match", "*")
+                .body(b"x")
+        };
+        let (_, response) = session.answer(&signed(create()));
+        assert_eq!(response.status, 201, "none there");
+        let (event, response) = session.answer(&signed(create()));
+        assert_eq!(
+            (event, response.status),
+            (Event::Refused("BlobAlreadyExists".to_string()), 409)
+        );
+        let matching =
+            |method: &str, tag: &str| signed(Request::new(method, "/c/b").header("If-Match", tag));
+        let (_, response) = session.answer(&matching("GET", "\"0x2\""));
+        assert_eq!(response.status, 412);
+        assert_eq!(
+            response.header_value("x-ms-error-code"),
+            Some("ConditionNotMet")
+        );
+        let (_, response) = session.answer(&matching("DELETE", "0x2"));
+        assert_eq!(response.status, 412, "unquoted as well");
+        assert_eq!(session.blobs().len(), 1, "nothing deleted");
+        let (_, response) = session.answer(&matching("GET", "\"0x1\""));
+        assert_eq!(
+            (response.status, response.body.as_slice()),
+            (200, &b"x"[..])
+        );
+        let (_, response) = session.answer(&matching("DELETE", "\"0x1\""));
+        assert_eq!(response.status, 202);
+        let (_, response) = session.answer(&matching("GET", "\"0x1\""));
+        assert_eq!(response.status, 404, "gone");
+        let (_, response) = session.answer(&matching("DELETE", "\"0x1\""));
+        assert_eq!(response.status, 404);
     }
 }

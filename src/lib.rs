@@ -7,16 +7,16 @@
 //! and its REST API is four calls on a container: list under a prefix, get,
 //! put, delete. A Receive Location lists a prefix, gets each blob as the
 //! runtime first reads it, and deletes it once the runtime accepts it after
-//! the whole receive cycle — one refused stays where it lies and is not
-//! received again while its `Etag` is unchanged, one whose cycle failed
-//! stays for the next receive; a Send Location puts a Stream as a block
-//! blob.
+//! the whole receive cycle, both only while it bears the `Etag` it was
+//! listed with — one refused stays where it lies and is not received again
+//! while its `Etag` is unchanged, one whose cycle failed stays for the next
+//! receive; a Send Location puts a Stream as a block blob.
 //! Both are Shared Key over plain HTTP/1.1 on a socket — `https://` with
 //! the `tls` feature, which is the http technology's TLS (ADR-0033).
 //!
 //! ```text
 //! xml.rs         the enumeration and the error, picked by hand
-//! client.rs      Xmip's side: list, get, put, delete
+//! client.rs      Xmip's side: list, get and delete as listed, put, put new
 //! session.rs     the far end a test or the essentials runs on loopback
 //! ```
 //!
@@ -166,7 +166,10 @@ impl Transport for AzureBlobTransport {
     /// one object-store receive: the receive gets and deletes nothing, each
     /// blob's `GET` is made when the runtime first reads its body — whole,
     /// `net::http` reads a `GET` body whole — and its acknowledgement
-    /// deletes it on [`transport::Verdict::Accepted`] only. On
+    /// deletes it on [`transport::Verdict::Accepted`] only, both with
+    /// `If-Match` the `Etag` it was listed with: one written again or gone
+    /// since is not read, and not deleted ([`Client::get_as_listed`],
+    /// [`Client::delete_as_listed`]). On
     /// [`transport::Verdict::Refused`] it is left where it lies and this
     /// Location does not receive it again while its `Etag` is unchanged —
     /// one written again is a new arrival; the memory is the node
@@ -185,9 +188,9 @@ impl Transport for AzureBlobTransport {
             || client.list(container, &self.prefix),
             most,
             &self.refused,
-            |blob| format!("azure-blob://{container}/{blob}"),
-            move |blob| getting.get(&getting_from, blob),
-            move |blob| deleting.delete(&deleting_from, blob),
+            |blob| origin(container, blob),
+            move |blob, etag| getting.get_as_listed(&getting_from, blob, etag),
+            move |blob, etag| deleting.delete_as_listed(&deleting_from, blob, etag),
         )
     }
 
@@ -275,6 +278,15 @@ impl Configured for AzureBlobTransport {
     }
 }
 
+/// The blob `blob` in `container`, as an origin says it, under the scheme
+/// above: `azure-blob://container/blob`. The one place the form is
+/// written: the transport's receive, the session's answers and the
+/// azure-blob archive's receipt all name a blob by it.
+#[must_use]
+pub fn origin(container: &str, blob: &str) -> String {
+    format!("azure-blob://{container}/{blob}")
+}
+
 impl AzureBlobTransport {
     /// Both ends on this machine: an ephemeral local port, one account key
     /// the far end expects and the near end signs with, the loopback
@@ -328,6 +340,7 @@ impl Loopback for AzureBlobTransport {
 mod tests {
     use super::*;
     use std::assert_matches;
+    use std::io::Read as _;
     use std::thread::JoinHandle;
     use transport::Taken;
 
@@ -475,6 +488,58 @@ mod tests {
         assert_eq!(again.bytes, b"second", "another Etag, a new arrival");
         let (session, _) = far_end.join().expect("thread");
         assert!(session.blobs().is_empty(), "accepted, so deleted");
+    }
+
+    #[test]
+    fn a_replacement_between_read_and_acceptance_stays_for_the_next_listing() {
+        let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
+        let near = node(&format!("http://{address}"), KEY);
+        // A put; a list, the get read; a put again; the delete refused; a
+        // list, a get, a delete.
+        let far_end = serve(near.session().expect("base64"), listener, 8);
+        near.send("in/1.edi", b"first").expect("put");
+        let listed = near.receive().expect("listed").remove(0);
+        let (_, mut body, told) = listed.into_parts();
+        let mut read = Vec::new();
+        body.read_to_end(&mut read).expect("read as listed");
+        assert_eq!(read, b"first");
+        near.send("in/1.edi", b"second").expect("written again");
+        told.acknowledge(transport::Verdict::Accepted)
+            .expect("told done");
+        let again = near.receive().expect("listed").remove(0);
+        let again = again.taken().expect("the replacement is still there");
+        assert_eq!(again.bytes, b"second");
+        let (session, events) = far_end.join().expect("thread");
+        assert_eq!(
+            events[4],
+            Event::Refused("ConditionNotMet".to_string()),
+            "the first delete held to the Etag listed"
+        );
+        assert!(session.blobs().is_empty(), "each deleted as it was listed");
+    }
+
+    #[test]
+    fn a_replacement_between_listing_and_first_read_is_not_read_under_the_old_stamp() {
+        let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
+        let near = node(&format!("http://{address}"), KEY);
+        // A put; a list; a put again; the get refused; a list, a get, a
+        // delete.
+        let far_end = serve(near.session().expect("base64"), listener, 7);
+        near.send("in/1.edi", b"first").expect("put");
+        let listed = near.receive().expect("listed").remove(0);
+        near.send("in/1.edi", b"second").expect("written again");
+        let failure = listed.taken().expect_err("not read under the old Etag");
+        assert!(
+            failure.message.contains("changed since it was listed"),
+            "{failure}"
+        );
+        assert!(failure.retryable, "{failure}");
+        let again = near.receive().expect("listed").remove(0);
+        let again = again.taken().expect("a new arrival");
+        assert_eq!(again.bytes, b"second");
+        let (session, events) = far_end.join().expect("thread");
+        assert_eq!(events[3], Event::Refused("ConditionNotMet".to_string()));
+        assert!(session.blobs().is_empty(), "accepted as listed, so deleted");
     }
 
     #[test]
