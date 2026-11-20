@@ -8,8 +8,9 @@
 //! A receive gets and deletes a blob only as it was listed: Get Blob and
 //! Delete Blob carry `If-Match` with the `Etag` the listing gave, and the
 //! service answers 412 `ConditionNotMet` where the blob was written again
-//! since and 404 `BlobNotFound` where it is gone. An archive writes a blob
-//! only where none lies: Put Blob carries `If-None-Match: *`, which the
+//! since and 404 `BlobNotFound` where it is gone. A receive's claim and an
+//! archive write a blob only where none lies: Put Blob carries
+//! `If-None-Match: *`, which the
 //! conditional-header tables answer with 412 where a blob is there and the
 //! service with 409 `BlobAlreadyExists`. Microsoft's sources are pages of
 //! <https://learn.microsoft.com/en-us/rest/api/storageservices/>:
@@ -19,7 +20,7 @@
 
 use std::time::Duration;
 
-use transport::error::Result;
+use transport::error::{Result, protocol_error};
 use transport::listed::AsListed;
 
 use azure::shared_key::{self, Signer};
@@ -145,13 +146,14 @@ impl Client {
     }
 
     /// Store `bytes` as the block blob at `blob` in `container` where no
-    /// blob lies, never over one: Put Blob with `If-None-Match: *`. Whether
-    /// it was stored: `false` where a blob was there, which is left as it
-    /// was.
+    /// blob lies, never over one: Put Blob with `If-None-Match: *`. The
+    /// `ETag` it was stored with, or `None` where a blob was there, which
+    /// is left as it was.
     ///
     /// # Errors
-    /// Where the endpoint refused or could not be reached.
-    pub fn put_new(&self, container: &str, blob: &str, bytes: &[u8]) -> Result<bool> {
+    /// Where the endpoint refused or could not be reached, or stored it
+    /// without saying its `ETag`.
+    pub fn put_new(&self, container: &str, blob: &str, bytes: &[u8]) -> Result<Option<String>> {
         let request = block_blob(container, blob, bytes).header("If-None-Match", "*");
         created(self.exchange(request)?)
     }
@@ -204,14 +206,17 @@ fn as_listed(answer: Response) -> Result<AsListed<Response>> {
     judge(answer).map(AsListed::Held)
 }
 
-/// A create's answer: whether it stored the blob. 412 `ConditionNotMet`,
-/// as the conditional-header tables have it, and 409 `BlobAlreadyExists`,
-/// as the service answers, both say a blob was there.
-fn created(answer: Response) -> Result<bool> {
+/// A create's answer: the `ETag` it stored the blob with. 412
+/// `ConditionNotMet`, as the conditional-header tables have it, and 409
+/// `BlobAlreadyExists`, as the service answers, both say a blob was there.
+fn created(answer: Response) -> Result<Option<String>> {
     if coded(&answer, 412, "ConditionNotMet") || coded(&answer, 409, "BlobAlreadyExists") {
-        return Ok(false);
+        return Ok(None);
     }
-    judge(answer).map(|_| true)
+    let stored = judge(answer)?;
+    let etag = stored.header_value("ETag").map(str::to_string);
+    etag.map(Some)
+        .ok_or_else(|| protocol_error("the Blob service stored a blob without saying its ETag"))
 }
 
 /// Whether `answer` is `status` with `code` in its body. The status is
@@ -263,11 +268,10 @@ mod tests {
             .expect("endpoint")
             .timing_out_after(Duration::from_secs(2));
         client.put("orders", "in/a b.edi", b"UNA").expect("put");
-        assert!(client.put_new("orders", "out/c.edi", b"UNB").expect("put"));
-        assert!(
-            !client.put_new("orders", "out/c.edi", b"UNC").expect("put"),
-            "one is there"
-        );
+        let stored = client.put_new("orders", "out/c.edi", b"UNB").expect("put");
+        assert_eq!(stored.as_deref(), Some("\"0x2\""), "its ETag");
+        let there = client.put_new("orders", "out/c.edi", b"UNC").expect("put");
+        assert_eq!(there, None, "one is there");
         assert_eq!(
             client.list("orders", "in/").expect("list"),
             vec![("in/a b.edi".to_string(), "0x1".to_string())],
@@ -321,9 +325,14 @@ mod tests {
                 "{failure}"
             );
         }
-        assert!(created(Response::new(201)).expect("stored"));
-        assert!(!created(error(409, "BlobAlreadyExists")).expect("there"));
-        assert!(!created(error(412, "ConditionNotMet")).expect("there"));
+        let stored = created(Response::new(201).header("ETag", "\"0x7\""));
+        assert_eq!(stored.expect("stored").as_deref(), Some("\"0x7\""));
+        assert!(created(Response::new(201)).is_err(), "stored, ETag unsaid");
+        assert_eq!(
+            created(error(409, "BlobAlreadyExists")).expect("there"),
+            None
+        );
+        assert_eq!(created(error(412, "ConditionNotMet")).expect("there"), None);
         for (status, code) in [
             (409, "BlobImmutableDueToPolicy"),
             (412, "LeaseIdMissing"),
