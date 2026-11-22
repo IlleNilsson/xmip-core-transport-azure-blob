@@ -60,7 +60,7 @@ use transport::listed::Claims;
 use transport::listening::Listening;
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{ArrivalIdentity, NodeLocation};
+use transport::{ArrivalIdentity, NodeStart};
 use transport::{Arrived, Configured, Directions, ResourceClaim, Transport};
 use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
@@ -275,10 +275,12 @@ impl Configured for AzureBlobTransport {
         self
     }
 
-    /// Claims made in `node`'s name from here on; every claim that name
-    /// still holds in the container is deleted by the first receive that
-    /// reaches it (ADR-0024, amendment 2026-11-20).
-    fn on_node(mut self, node: &NodeLocation) -> Result<Self> {
+    /// Claims made in the name of `node`, its node and that start of it,
+    /// from here on; every claim an earlier start of the node still holds
+    /// in the container is deleted by the first receive that reaches it,
+    /// and one of this start, whichever Location made it, is left
+    /// (ADR-0024, amendments 2026-11-20 and 2026-11-22).
+    fn on_node(mut self, node: &NodeStart) -> Result<Self> {
         self.claims = Claims::recovering(Claimant::of(node));
         Ok(self)
     }
@@ -482,17 +484,24 @@ mod tests {
         assert_matches!(events[17], Event::Listed { .. });
     }
 
-    #[test]
-    fn two_nodes_listing_one_container_never_both_receive_one_blob() {
+    /// The start `start` of the node at `place`.
+    fn located(place: &str, start: u128) -> NodeStart {
+        let location = format!("process-{}/place-{place}", std::process::id());
+        NodeStart::new(transport::NodeLocation::new(location), start)
+    }
+
+    /// Two Locations listing one container, built on `first` and on
+    /// `second`: the first's claim is written, the second, starting, reads
+    /// it, leaves it and receives nothing, and once the first accepts, the
+    /// blob and its claim are gone.
+    fn one_receives_of(first: &NodeStart, second: &NodeStart) {
         let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
-        let on = |place: &str| {
-            let location =
-                NodeLocation::new(format!("process-{}/place-{place}", std::process::id()));
+        let on = |built_on: &NodeStart| {
             node(&format!("http://{address}"), KEY)
-                .on_node(&location)
+                .on_node(built_on)
                 .expect("on its node")
         };
-        let (first, second) = (on("first"), on("second"));
+        let (first, second) = (on(first), on(second));
         // A put; the first's list and claim; the second's list, and its
         // read of the claim it finds as it starts; the first's get, delete
         // and its claim's; the second's list.
@@ -506,11 +515,18 @@ mod tests {
         let (session, events) = far_end.join().expect("thread");
         assert!(session.blobs().is_empty(), "the blob and its claim");
         let claim = "azure-blob://orders/in/1.edi.xmip-claim".to_string();
-        assert_eq!(
-            events[4],
-            Event::Retrieved(claim),
-            "another node's, and left"
-        );
+        assert_eq!(events[4], Event::Retrieved(claim), "the first's, and left");
+    }
+
+    #[test]
+    fn two_nodes_listing_one_container_never_both_receive_one_blob() {
+        one_receives_of(&located("first", 1), &located("second", 1));
+    }
+
+    #[test]
+    fn two_locations_of_one_start_listing_one_container_never_both_receive_one_blob() {
+        let start = located("first", 1);
+        one_receives_of(&start, &start);
     }
 
     #[test]
