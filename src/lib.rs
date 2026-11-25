@@ -85,6 +85,10 @@ pub struct AzureBlobTransport {
     /// The claims this Location makes, and the blobs it refused and left
     /// in the container, each with its `Etag`; a clone shares them.
     claims: Claims,
+    /// The secret a Location names, the account key Shared Key signs with,
+    /// read at each request (ADR-0019, amendment 2026-10-29; ADR-0015,
+    /// amendment 2026-11-25); `key` where it names none.
+    secret: Option<transport::Secured>,
 }
 
 impl AzureBlobTransport {
@@ -101,6 +105,7 @@ impl AzureBlobTransport {
             timeout: None,
             connections: Connections::new(),
             claims: Claims::new(Claimant::process()),
+            secret: None,
         }
     }
 
@@ -118,12 +123,16 @@ impl AzureBlobTransport {
         self
     }
 
-    /// The client this transport speaks through.
+    /// The client this transport speaks through, signing with the account
+    /// key the Location's secret holds, read now, or this transport's own
+    /// where it names none.
     ///
     /// # Errors
-    /// Where the endpoint is not an HTTP URL, or the key is not base64.
+    /// Where the endpoint is not an HTTP URL, the secret is not set or not
+    /// a password, or the key is not base64.
     pub fn client(&self) -> Result<Client> {
-        let client = Client::new(&self.endpoint, &self.account, &self.key)?;
+        let key = transport::secured::presented(self.secret.as_ref(), &self.key, self.name())?;
+        let client = Client::new(&self.endpoint, &self.account, &key)?;
         let client = client.sharing(self.connections.clone());
         Ok(match self.timeout {
             Some(timeout) => client.timing_out_after(timeout),
@@ -212,7 +221,8 @@ impl Transport for AzureBlobTransport {
 impl Configured for AzureBlobTransport {
     /// The address is the Blob service endpoint,
     /// `https://<account>.blob.core.windows.net`. The account key is the
-    /// Location's credentials, not a setting: a secret never is.
+    /// Location's `secret`, a password secret the Administration Database
+    /// keeps, never a setting ([`Configured::secured_by`]).
     const SETTINGS: &'static Settings = &Settings {
         technology: env!("CARGO_PKG_NAME"),
         settings: &[
@@ -256,7 +266,7 @@ impl Configured for AzureBlobTransport {
     }
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
-        // The account key comes through the Location's credentials.
+        // The account key is the Location's secret (`secured_by`).
         let mut transport = Self::new(
             address,
             settings.text("account"),
@@ -282,6 +292,14 @@ impl Configured for AzureBlobTransport {
     /// (ADR-0024, amendments 2026-11-20 and 2026-11-22).
     fn on_node(mut self, node: &NodeStart) -> Result<Self> {
         self.claims = Claims::recovering(Claimant::of(node));
+        Ok(self)
+    }
+
+    /// The account key the Location's secret holds, as the `account`
+    /// setting's, read at each request: its sends, and its receive's
+    /// listings, gets, claims and deletes, each signed with Shared Key.
+    fn secured_by(mut self, secret: transport::Secured) -> Result<Self> {
+        self.secret = Some(secret);
         Ok(self)
     }
 }
@@ -384,7 +402,7 @@ mod tests {
         );
         assert_eq!(received.prefix, "in/");
         assert_eq!(received.timeout, Some(Duration::from_secs(5)));
-        assert!(received.key.is_empty(), "the key is the credentials'");
+        assert!(received.key.is_empty(), "the key is the Location's secret");
         let Err(refused) = AzureBlobTransport::open(endpoint, Applies::Send, &given[..1]) else {
             panic!("the container is required");
         };
@@ -628,6 +646,39 @@ mod tests {
             events,
             vec![Event::Refused("AuthenticationFailed".to_string())]
         );
+    }
+
+    #[test]
+    fn a_location_presents_the_account_key_its_secret_holds() {
+        use transport::secured::Kept;
+        use xcore::settings::Given;
+        let drawn = codec::base64::encode(&codec::random::array::<32>());
+        let (listener, address) = socket::bind_tcp("127.0.0.1:0").expect("bind");
+        let far_end = serve(
+            node("http://x", &drawn).session().expect("base64"),
+            listener,
+            1,
+        );
+        let text = |name: &str, value: &str| (name.to_string(), Given::Text(value.to_string()));
+        let given = [text("account", "acct"), text("container", "orders")];
+        let endpoint = format!("http://{address}");
+        let kept = std::sync::Arc::new(Kept::default());
+        let near = AzureBlobTransport::open(&endpoint, Applies::Send, &given)
+            .expect("built")
+            .timing_out_after(Duration::from_secs(2))
+            .secured_by(kept.secured("partner-x.blob"))
+            .expect("Blob presents the account key");
+        let unset = near.send("in/1.edi", b"x").expect_err("not set yet");
+        assert!(
+            unset.retryable && unset.message.contains("is not set"),
+            "{unset}"
+        );
+        kept.set("partner-x.blob", xcore::SecretKind::Password, &drawn);
+        near.send("in/1.edi", b"signed")
+            .expect("signed with the secret");
+        let (_, events) = far_end.join().expect("thread");
+        let stored = Taken::new(origin("orders", "in/1.edi"), b"signed".to_vec());
+        assert_eq!(events, [Event::Stored(stored)]);
     }
 
     #[test]
