@@ -12,24 +12,25 @@ path = "src/lib.rs"
 
 [dependencies]
 # A Technology depends on its parent Capability, never the reverse
-# (repository-model.md).
+# (repository-model.md). Its declaration takes the capability's `timeout`
+# (`transport::configured::timeout`).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # XML character data, escaped as every reader in the estate unescapes it.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
 # The endpoint parser, the request and its answer, and TLS behind the
 # `tls` feature — one TLS stack in the estate, the http technology's
 # (ADR-0033).
-http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main" }
+http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main", optional = true }
 # Percent-encoding (RFC 3986), written once for the estate, HTTP/1.1 on the
 # wire (`net::http`) and the URL an endpoint is (`net::Endpoint`).
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
+net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
 # Shared Key, which this crate carried with its HMAC-SHA256 and base64
 # until the owner's ruling of 2026-09-22 put what Azure speaks in the
 # Azure crate (ADR-0044).
-azure = { package = "xmip-core-transport-azure", git = "https://github.com/IlleNilsson/xmip-core-transport-azure", branch = "main" }
+azure = { package = "xmip-core-transport-azure", git = "https://github.com/IlleNilsson/xmip-core-transport-azure", branch = "main", optional = true }
 
 [dev-dependencies]
 # A Location's secret held in memory (`transport::secured::Kept`), from the
@@ -37,9 +38,18 @@ azure = { package = "xmip-core-transport-azure", git = "https://github.com/IlleN
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
 
 [features]
-default = []
-# HTTPS endpoints. Off by default, as it is in the http technology.
-tls = ["http/tls"]
+# The technology: its code, everything it is built on, and its declaration.
+# Without it the crate is its declaration alone (ADR-0064, amendments
+# 2026-10-22 and 2026-11-26).
+default = ["declaration", "dep:codec", "dep:http", "dep:net", "dep:azure"]
+# The declaration alone: what a Location of this technology is configured
+# with, `declaration::SETTINGS` and `SCHEMES`, and none of the code — what
+# the surfaces' library is to carry (open problem 48). It takes nothing of
+# the Azure crate: a Location signs as its `account`, declared here.
+declaration = []
+# HTTPS endpoints. Off by default, as it is in the http technology; the
+# technology's code, so the default with it.
+tls = ["default", "http/tls"]
 
 [lints.rust]
 unsafe_code = "forbid"
