@@ -31,9 +31,7 @@
 //! claims each blob it hands over by putting `<name>.xmip-claim` beside it
 //! with `If-None-Match: *`, which the service performs "only if the
 //! resource doesn't exist" — the capability's claim, written once
-//! (`transport::listed::Claims`). The claim holds the node's location and
-//! the time; it is deleted as it was put however the cycle ends, and a
-//! node that starts again deletes every claim its name still holds. Not a
+//! (`transport::listed::Claims`). Not a
 //! blob lease, which would lock the blob against its producer's own writes
 //! while it is held. [`Transport::claims`] answers the same claim for one
 //! blob by its address.
@@ -43,9 +41,7 @@
 //! or a name alone in this transport's container.
 //!
 //! **Built with its `declaration` feature alone** the crate is
-//! [`declaration`], what a Location of it is configured with, and none of
-//! the code above, which is behind the default feature: what the surfaces'
-//! library carries (ADR-0064, amendment 2026-11-26).
+//! [`declaration`].
 
 #[cfg(feature = "default")]
 pub mod client;
@@ -207,23 +203,11 @@ impl Transport for AzureBlobTransport {
         transport::Waiting::Polled("a receive lists the container and returns")
     }
 
-    /// Every blob under the prefix that this node's claim wins, listed by
-    /// the capability's one object-store receive
-    /// ([`transport::listed::Claims::listed`]): each claimed by a Put Blob
-    /// of its claim with `If-None-Match: *`, one passed over where
-    /// another's claim lies. The receive gets and deletes nothing, each
-    /// blob's `GET` is made when the runtime first reads its body — whole,
-    /// `net::http` reads a `GET` body whole — and its acknowledgement
-    /// deletes it on [`transport::Verdict::Accepted`] only, both with
-    /// `If-Match` the `Etag` it was listed with: one written again or gone
-    /// since is not read, and not deleted ([`Client::get_as_listed`],
-    /// [`Client::delete_as_listed`]). On
-    /// [`transport::Verdict::Refused`] it is left where it lies and this
-    /// Location does not receive it again while its `Etag` is unchanged —
-    /// one written again is a new arrival; the memory is the node
-    /// process's, so a node started again receives it once more. On
-    /// [`transport::Verdict::Failed`] it is left for the next receive to
-    /// list and get again. Whatever the verdict, its claim is deleted.
+    /// What [`transport::listed::Claims::listed`] wins under the prefix, each
+    /// blob's claim a Put Blob with `If-None-Match: *`, its get and its
+    /// delete with `If-Match` the `Etag` it was listed with
+    /// ([`Client::get_as_listed`], [`Client::delete_as_listed`]); a `GET`
+    /// body is read whole by `net::http`.
     fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         self.claims.listed(&self.container()?, most)
     }
