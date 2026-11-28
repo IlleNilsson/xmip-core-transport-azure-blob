@@ -14,28 +14,28 @@ path = "src/lib.rs"
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md). Its declaration takes the capability's `timeout`
 # (`transport::configured::timeout`).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+transport = { workspace = true }
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+xcore = { workspace = true }
 # XML character data, escaped as every reader in the estate unescapes it.
-codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main", optional = true }
+codec = { workspace = true, optional = true }
 # The endpoint parser, the request and its answer, and TLS behind the
 # `tls` feature — one TLS stack in the estate, the http technology's
 # (ADR-0033).
-http = { package = "xmip-core-transport-http", git = "https://github.com/IlleNilsson/xmip-core-transport-http", branch = "main", optional = true }
+http = { workspace = true, optional = true }
 # Percent-encoding (RFC 3986), written once for the estate, HTTP/1.1 on the
 # wire (`net::http`) and the URL an endpoint is (`net::Endpoint`).
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
+net = { workspace = true, optional = true }
 # Shared Key, which this crate carried with its HMAC-SHA256 and base64
 # until the owner's ruling of 2026-09-22 put what Azure speaks in the
 # Azure crate (ADR-0044).
-azure = { package = "xmip-core-transport-azure", git = "https://github.com/IlleNilsson/xmip-core-transport-azure", branch = "main", optional = true }
+azure = { workspace = true, optional = true }
 
 [dev-dependencies]
 # A Location's secret held in memory (`transport::secured::Kept`), from the
 # capability's test support and never a production build (ADR-0044).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+transport = { workspace = true, features = ["test-support"] }
 
 [features]
 # The code and its declaration: the transport guide's "The declaration",
